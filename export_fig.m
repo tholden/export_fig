@@ -336,6 +336,7 @@ function [imageData, alpha] = export_fig(varargin) %#ok<*STRCL1>
 
     % Display promo (just once a week!)
     try promo_time = getpref('export_fig','promo_time'); catch, promo_time=-inf; end
+    promo_time = now;
     if abs(now-promo_time) > 7 && ~isdeployed
         programsCrossCheck;
         msg = 'For professional Matlab assistance,  please contact <$>';
