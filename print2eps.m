@@ -19,20 +19,23 @@ function print2eps(name, fig, export_options, varargin)
 %              ".eps" extension is added if not there already. If a path is
 %              not specified, the figure is saved in the current directory.
 %   fig_handle - The handle of the figure to be saved. Default: gcf().
-%   export_options - array or struct of optional scalar values:
-%       bb_padding - Scalar value of amount of padding to add to border around
-%                    the cropped image, in points (if >1) or percent (if <1).
-%                    Can be negative as well as positive; Default: 0
-%       crop       - Cropping flag. Deafult: 0
-%       fontswap   - Whether to swap non-default fonts in figure. Default: true
+%   export_options - array or struct of optional values:
+%       bb_padding    - Scalar value of amount of padding to add to border around
+%                       the cropped image, in points (if >1) or percent (if <1).
+%                       Can be negative as well as positive; Default: 0
+%       crop          - Cropping flag. Deafult: 0
+%       fontswap      - Whether to swap non-default fonts in figure. Default: true
 %       preserve_size - Whether to preserve the figure's PaperSize. Default: false
-%       font_space - Character used to separate font-name terms in the EPS output
-%                    e.g. "Courier New" => "Courier-New". Default: ''
-%                    (available only via the struct alternative)
-%       renderer   - Renderer used to generate bounding-box. Default: 'opengl'
-%                    (available only via the struct alternative)
-%       crop_amounts - 4-element vector of crop amounts: [top,right,bottom,left]
-%                    (available only via the struct alternative)
+%       font_space    - Character used to separate font-name terms in the EPS output
+%                       e.g. "Courier New" => "Courier-New". Default: ''
+%                       (available only via the struct alternative)
+%       renderer      - Renderer used to generate bounding-box. Default: 'opengl'
+%                       (available only via the struct alternative)
+%       crop_amounts  - 4-element vector of crop amounts: [top,right,bottom,left]
+%                       (available only via the struct alternative)
+%       regexprep     - 2-element cell-array of regular-expression replacement in the
+%                       generated EPS. 1st element is the replaced string(s), 2nd is
+%                       the replacement(s) (available only via the struct alternative)
 %   print_options - Additional parameter strings to be passed to the print command
 
 %{
@@ -106,6 +109,13 @@ function print2eps(name, fig, export_options, varargin)
 % 15/01/20: Added warning ID for easier suppression by users
 % 20/01/20: Added comment about unsupported patch transparency in some Ghostscript versions (issue #285)
 % 10/12/20: Enabled user-specified regexp replacements in the generated EPS file (issue #324)
+% 11/03/21: Added documentation about export_options.regexprep; added sanity check (issue #324)
+% 21/07/21: Fixed misleading warning message about regexprep field when it's empty (issue #338)
+% 26/08/21: Added a short pause to avoid unintended image cropping (issue #318)
+% 16/03/22: Fixed occasional empty files due to excessive cropping (issues #350, #351)
+% 15/05/22: Fixed EPS bounding box (issue #356)
+% 13/04/23: Reduced (hopefully fixed) unintended EPS/PDF image cropping (issues #97, #318)
+% 02/05/24: Fixed contour labels with non-default FontName incorrectly exported as Courier (issue #388)
 %}
 
     options = {'-loose'};
@@ -318,6 +328,9 @@ function print2eps(name, fig, export_options, varargin)
         origAlphaColors = eps_maintainAlpha(fig);
     end
 
+    % Ensure that everything is fully rendered, to avoid cropping (issue #318)
+    drawnow; pause(0.05);
+
     % Print to eps file
     print(fig, options{:}, name);
 
@@ -424,7 +437,7 @@ function print2eps(name, fig, export_options, varargin)
             %}
 
             % This is much faster although less accurate: fix all non-gray lines to have a LineWidth of 0.75 (=1 LW)
-            % Note: This will give incorrect LineWidth of 075 for lines having LineWidth<0.75, as well as for non-gray grid-lines (if present)
+            % Note: This will give incorrect LineWidth of 0.75 for lines having LineWidth<0.75, as well as for non-gray grid-lines (if present)
             %       However, in practice these edge-cases are very rare indeed, and the difference in LineWidth should not be noticeable
             %fstrm = regexprep(fstrm, '([CR]C\n2 setlinecap\n1 LJ)\nN', '$1\n1 LW\nN');
             % This is faster (the original regexprep could take many seconds when the axes contains many lines):
@@ -514,7 +527,6 @@ function print2eps(name, fig, export_options, varargin)
         % 1b. Fix issue #239: black title meshes with temporary black background figure bgcolor, causing bad cropping
         hTitles = [];
         if isequal(get(fig,'Color'),'none')
-            hAxes = findall(fig,'type','axes');
             for idx = 1 : numel(hAxes)
                 hAx = hAxes(idx);
                 try
@@ -531,8 +543,16 @@ function print2eps(name, fig, export_options, varargin)
 
         % 2. Create a bitmap image and use crop_borders to create the relative
         %    bb with respect to the PageBoundingBox
+        drawnow; pause(0.05);  % avoid unintended cropping (issue #318)
         [A, bcol] = print2array(fig, 1, renderer);
         [aa, aa, aa, bb_rel] = crop_borders(A, bcol, bb_padding, crop_amounts); %#ok<ASGLU>
+        if any(bb_rel>1) || any(bb_rel<=0) || bb_rel(2)>0.15 % invalid cropping - retry after prolonged pause
+            pause(0.15);  % avoid unintended cropping (issues #350, #351)
+            [A, bcol] = print2array(fig, 1, renderer);
+            [aa, aa, aa, bb_rel] = crop_borders(A, bcol, bb_padding, crop_amounts); %#ok<ASGLU>
+        end
+        bb_rel(bb_rel>1) = 1;  % ignore invalid values
+        bb_rel(bb_rel<0) = 1;  % ignore invalid values (fix issue #356)
 
         try set(hTitles,'Color','k'); catch, end
 
@@ -569,7 +589,8 @@ function print2eps(name, fig, export_options, varargin)
     fstrm = regexprep(fstrm, '\n([-\d.]+ [-\d.]+) ([-\d.]+ [-\d.]+) ([-\d.]+ [-\d.]+) 3 MP\nPP\n\3 \2 \1 3 MP\nPP\n','\n$1 $2 $3 0 0 4 MP\nPP\n');
 
     % If user requested a regexprep replacement of string(s), do this now (issue #324)
-    if ~isempty(export_options.regexprep)
+    if isstruct(export_options) && isfield(export_options,'regexprep') && ~isempty(export_options.regexprep)  %issue #338
+        useRegexprepOption = true;
         try
             oldStrOrRegexp = export_options.regexprep{1};
             newStrOrRegexp = export_options.regexprep{2};
@@ -577,10 +598,36 @@ function print2eps(name, fig, export_options, varargin)
         catch err
             warning('YMA:export_fig:regexprep', 'Error parsing regexprep: %s', err.message);
         end
+    else
+        useRegexprepOption = false;
+    end
+
+    % Fix issue #388: contour labels with non-default FontName incorrectly exported as Courier
+    try
+        fontNames = {};
+        for idx = 1 : numel(hAxes)
+            try hPlots = allchild(hAxes(idx)); catch, hPlots = []; end
+            for idx2 = 1 : numel(hPlots)
+                try hLabels = hPlots(idx2).TextPrims; catch, hLabels = []; end
+                for idx3 = 1 : numel(hLabels)
+                    try fontNames{end+1} = hLabels(idx3).Font.Name; catch, end %#ok<AGROW>
+                end
+            end
+        end
+        fontNames = setdiff(fontNames,'Helvetica'); %Helvetica actually works ok
+        if numel(fontNames) > 1 && ~useRegexprepOption
+            warning('YMA:export_fig:countourFonts', 'export_fig cannot fix multiple contour label fonts; try using the -regexprep option to convert /Courier into %s etc.',fontNames{1});
+        elseif numel(fontNames) == 1
+            fstrm = regexprep(fstrm, '\n/Courier (\d+ F\nGS\n)', ['\n/' fontNames{1} ' $1']);
+        end
+    catch
+        % never mind - probably no matching contour labels
     end
 
     % Write out the fixed eps file
     read_write_entire_textfile(name, fstrm);
+
+    drawnow; pause(0.01);
 end
 
 function [StoredColors, fstrm, foundFlags] = eps_maintainAlpha(fig, fstrm, StoredColors)
